@@ -82,6 +82,13 @@ function recursive_column_pivot_lu!(A::AbstractMatrix, jpiv::AbstractVector{<:In
             # Solve A21
             A21 = @view A[m1+1:m,1:m1]
             @views trsm!('R', 'U', 'N', 'N', 1.0, A[1:m1,1:m1], A21)
+            #A11 = @view A[1:m1,1:m1]
+            #for i ∈ 1:m2, j ∈ 1:m1
+            #    for k ∈ 1:j-1
+            #        A21[i,j] -= A11[k,j] * A21[i,k]
+            #    end
+            #    A21[i,j] /= A11[j,j]
+            #end
 
             # Update A22
             A12 = @view A[1:m1,m1+1:n]
@@ -173,6 +180,12 @@ function recursive_row_pivot_lu!(A::AbstractMatrix, ipiv::AbstractVector{<:Integ
             # Solve A12
             A12 = @view A[1:n1,n1+1:n]
             @views trsm!('L', 'L', 'N', 'U', 1.0, A[1:n1,1:n1], A12)
+            #A11 = @view A[1:n1,1:n1]
+            #for j ∈ 1:n2, i ∈ 1:n1-1
+            #    for k ∈ i+1:n1
+            #        A12[k,j] -= A11[k,i] * A12[i,j]
+            #    end
+            #end
 
             # Update A22
             A21 = @view A[n1+1:m,1:n1]
