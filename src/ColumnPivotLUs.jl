@@ -33,8 +33,67 @@ function apply_column_swaps!(A, jpiv, m, npivot)
 end
 
 function column_pivot_lu!(A::AbstractMatrix, jpiv::AbstractVector{<:Integer})
-    recursive_column_pivot_lu!(A, jpiv, size(A, 1), size(A, 2))
+    blocked_column_pivot_lu!(A, jpiv, size(A, 1), size(A, 2))
     return A
+end
+
+function blocked_column_pivot_lu!(A::AbstractMatrix, jpiv::AbstractVector{<:Integer},
+                                  m::Integer, n::Integer)
+    @inbounds begin
+        n_diag = min(m, n)
+
+        if n_diag ≤ block_size
+            return recursive_column_pivot_lu!(A, jpiv, m, n)
+        end
+
+        for i ∈ 1:block_size:n_diag
+            ib = min(block_size, n_diag - i + 1)
+            ie = i + ib - 1
+            this_jpiv = @view jpiv[i:n_diag]
+
+            # Factor diagonal and right-of-diagonal blocks.
+            @views recursive_column_pivot_lu!(A[i:ie,i:n], this_jpiv, ib, n - i + 1)
+
+            # Apply interchanges to rows 1:i-1
+            if i > 1
+                apply_column_swaps!(@view(A[1:i-1,i:n]), this_jpiv, i - 1, ib)
+            end
+
+            if i + ib ≤ m
+                m2 = m - ie
+                n2 = n - ie
+
+                # Apply interchanges to rows i+ib:m
+                apply_column_swaps!(@view(A[ie+1:m,i:n]), this_jpiv, m2, ib)
+
+                # Compute block column of L.
+                A21 = @view A[ie+1:m,i:ie]
+                @views trsm!('R', 'U', 'N', 'N', 1.0, A[i:ie,i:ie], A21)
+                #A11 = @view A[i:ie,i:ie]
+                #for i ∈ 1:m2, j ∈ 1:jb
+                #    for k ∈ 1:j-1
+                #        A21[i,j] -= A11[k,j] * A21[i,k]
+                #    end
+                #    A21[i,j] /= A11[j,j]
+                #end
+
+                if i + ib ≤ n
+                    # Update trailing submatrix.
+                    A12 = @view A[i:ie,ie+1:n]
+                    A22 = @view A[ie+1:m,ie+1:n]
+                    mul!(A22, A21, A12, -1.0, 1.0)
+                    #@turbo for j ∈ 1:n2, k ∈ 1:jb, i ∈ 1:m2
+                    #    A22[i,j] -= A21[i,k] * A12[k,j]
+                    #end
+                end
+            end
+
+            # Adjust pivot indices.
+            this_jpiv .+= i - 1
+        end
+    end
+
+    return nothing
 end
 
 function recursive_column_pivot_lu!(A::AbstractMatrix, jpiv::AbstractVector{<:Integer},
