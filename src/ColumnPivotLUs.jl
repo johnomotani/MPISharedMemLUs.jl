@@ -158,11 +158,13 @@ function recursive_column_pivot_lu!(A::AbstractMatrix, jpiv::AbstractVector{<:In
             # Apply the interchange
             A[1,1], A[1,pivot_ind] = A[1,pivot_ind], A[1,1]
         else
+            n_diag = min(m, n)
+
             # Block-factorise
             # [ A11 | A12 ]
             # [ --------- ]
             # [ A21 | A22 ]
-            m1 = min(m, n) ÷ 2
+            m1 = n_diag ÷ 2
             m2 = m - m1
             n2 = n - m1
 
@@ -194,7 +196,7 @@ function recursive_column_pivot_lu!(A::AbstractMatrix, jpiv::AbstractVector{<:In
             #end
 
             # Factor A22
-            right_jpiv = @view jpiv[m1+1:min(m,n)]
+            right_jpiv = @view jpiv[m1+1:n_diag]
             recursive_column_pivot_lu!(A22, right_jpiv, m2, n2)
 
             # Apply interchanges to A12.
@@ -333,7 +335,7 @@ function recursive_column_pivot_lu!(A::AbstractMatrix{T}, jpiv::AbstractVector{<
             if rank == 0
                 jpiv[1] = 1
             end
-            rows_per_proc = (m + nproc) ÷ nproc
+            rows_per_proc = (m - 1 + nproc - 1) ÷ nproc
             @views A[rank*rows_per_proc+2:min((rank+1)*rows_per_proc+1,m),1] .*= 1.0 / A[1,1]
         elseif m == 1
             # One row case.

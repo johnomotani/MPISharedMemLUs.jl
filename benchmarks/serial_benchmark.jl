@@ -34,3 +34,4 @@ end
 
 serial_benchmark(128, 4096)
 serial_benchmark(4096, 4096)
+serial_benchmark(8192, 8192)
