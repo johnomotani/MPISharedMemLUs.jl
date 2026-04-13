@@ -27,6 +27,9 @@ import LinearAlgebra: lu!
 # This is LAPACK's default block size for DGETRF()
 const block_size = 64
 
+# Total (m*n) matrix size to revert to serial solves for submatrices.
+const serial_threshold = 8192
+
 struct ColumnPivotLU
     jpiv::Vector{Int64}
 end
@@ -234,18 +237,17 @@ function apply_column_swaps!(A, jpiv, m, npivot)
 end
 
 function lu!(cplu::ColumnPivotLU, A::AbstractMatrix)
-    blocked_column_pivot_lu!(cplu, A, size(A, 1), size(A, 2))
+    blocked_column_pivot_lu!(cplu.jpiv, A, size(A, 1), size(A, 2))
     return A
 end
 
-function blocked_column_pivot_lu!(cplu::ColumnPivotLU, A::AbstractMatrix, m::Integer,
-                                  n::Integer)
+function blocked_column_pivot_lu!(jpiv::AbstractVector{<:Integer}, A::AbstractMatrix,
+                                  m::Integer, n::Integer)
     @inbounds begin
-        jpiv = cplu.jpiv
         n_diag = min(m, n)
 
         if n_diag ≤ block_size
-            return recursive_column_pivot_lu!(A, jpiv, m, n)
+            return recursive_column_pivot_lu!(jpiv, A, m, n)
         end
 
         for i ∈ 1:block_size:n_diag
@@ -254,7 +256,7 @@ function blocked_column_pivot_lu!(cplu::ColumnPivotLU, A::AbstractMatrix, m::Int
             this_jpiv = @view jpiv[i:n_diag]
 
             # Factor diagonal and right-of-diagonal blocks.
-            @views recursive_column_pivot_lu!(A[i:ie,i:n], this_jpiv, ib, n - i + 1)
+            @views recursive_column_pivot_lu!(this_jpiv, A[i:ie,i:n], ib, n - i + 1)
 
             # Apply interchanges to rows 1:i-1.
             if i > 1
@@ -298,7 +300,7 @@ function blocked_column_pivot_lu!(cplu::ColumnPivotLU, A::AbstractMatrix, m::Int
     return nothing
 end
 
-function recursive_column_pivot_lu!(A::AbstractMatrix, jpiv::AbstractVector{<:Integer},
+function recursive_column_pivot_lu!(jpiv::AbstractVector{<:Integer}, A::AbstractMatrix,
                                     m::Integer, n::Integer)
     # A - the matrix being factorised in-place.
     # jpiv - the (column) pivot indices.
@@ -339,7 +341,7 @@ function recursive_column_pivot_lu!(A::AbstractMatrix, jpiv::AbstractVector{<:In
 
             # Factor
             # [ A11 | A12 ]
-            recursive_column_pivot_lu!(@view(A[1:m1,:]), jpiv, m1, n)
+            recursive_column_pivot_lu!(jpiv, @view(A[1:m1,:]), m1, n)
 
             # Apply interchanges to
             # [ A21 | A22 ]
@@ -366,7 +368,7 @@ function recursive_column_pivot_lu!(A::AbstractMatrix, jpiv::AbstractVector{<:In
 
             # Factor A22
             right_jpiv = @view jpiv[m1+1:n_diag]
-            recursive_column_pivot_lu!(A22, right_jpiv, m2, n2)
+            recursive_column_pivot_lu!(right_jpiv, A22, m2, n2)
 
             # Apply interchanges to A12.
             apply_column_swaps!(A12, right_jpiv, m1, min(m2,n2))
@@ -405,6 +407,13 @@ function blocked_column_pivot_lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix, m::
 
         if n_diag ≤ block_size
             return recursive_column_pivot_lu!(cplu, A, jpiv, m, n)
+        elseif m * n < serial_threshold
+            # For small (sub-)matrices, revert to a serial solve.
+            if rank == 0
+                return blocked_column_pivot_lu!(jpiv, A, m, n)
+            else
+                return nothing
+            end
         end
 
         rectangular_parallelism = true
@@ -515,6 +524,15 @@ function recursive_column_pivot_lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix,
         comm = cplu.comm
         rank = cplu.rank
         nproc = cplu.nproc
+
+        if m * n < serial_threshold
+            # For small (sub-)matrices, revert to a serial solve.
+            if rank == 0
+                return recursive_column_pivot_lu!(jpiv, A, m, n)
+            else
+                return nothing
+            end
+        end
 
         if n == 1
             # One column case, just need to handle jpiv and update column.
@@ -630,18 +648,17 @@ function apply_row_swaps!(A, ipiv, n, mpivot)
 end
 
 function lu!(rplu::RowPivotLU, A::AbstractMatrix)
-    blocked_row_pivot_lu!(rplu, A, size(A, 1), size(A, 2))
+    blocked_row_pivot_lu!(rplu.ipiv, A, size(A, 1), size(A, 2))
     return A
 end
 
-function blocked_row_pivot_lu!(rplu::RowPivotLU, A::AbstractMatrix, m::Integer,
-                               n::Integer)
+function blocked_row_pivot_lu!(ipiv::AbstractVector{<:Integer}, A::AbstractMatrix,
+                               m::Integer, n::Integer)
     @inbounds begin
-        ipiv = rplu.ipiv
         n_diag = min(m, n)
 
         if n_diag ≤ block_size
-            return recursive_row_pivot_lu!(A, ipiv, m, n)
+            return recursive_row_pivot_lu!(ipiv, A, m, n)
         end
 
         for j ∈ 1:block_size:n_diag
@@ -650,7 +667,7 @@ function blocked_row_pivot_lu!(rplu::RowPivotLU, A::AbstractMatrix, m::Integer,
             this_ipiv = @view ipiv[j:n_diag]
 
             # Factor diagonal and subdiagonal blocks.
-            @views recursive_row_pivot_lu!(A[j:m,j:je], this_ipiv, m - j + 1, jb)
+            @views recursive_row_pivot_lu!(this_ipiv, A[j:m,j:je], m - j + 1, jb)
 
             # Apply interchanges to columns 1:j-1.
             if j > 1
@@ -693,7 +710,7 @@ function blocked_row_pivot_lu!(rplu::RowPivotLU, A::AbstractMatrix, m::Integer,
     return nothing
 end
 
-function recursive_row_pivot_lu!(A::AbstractMatrix, ipiv::AbstractVector{<:Integer},
+function recursive_row_pivot_lu!(ipiv::AbstractVector{<:Integer}, A::AbstractMatrix,
                                  m::Integer, n::Integer)
     # A - the matrix being factorised in-place.
     # ipiv - the (row) pivot indices.
@@ -738,7 +755,7 @@ function recursive_row_pivot_lu!(A::AbstractMatrix, ipiv::AbstractVector{<:Integ
             # [ A11 ]
             # [ --- ]
             # [ A21 ]
-            recursive_row_pivot_lu!(@view(A[:,1:n1]), ipiv, m, n1)
+            recursive_row_pivot_lu!(ipiv, @view(A[:,1:n1]), m, n1)
 
             # Apply interchanges to
             # [ A12 ]
@@ -766,7 +783,7 @@ function recursive_row_pivot_lu!(A::AbstractMatrix, ipiv::AbstractVector{<:Integ
 
             # Factor A22
             bottom_ipiv = @view ipiv[n1+1:n_diag]
-            recursive_row_pivot_lu!(A22, bottom_ipiv, m2, n2)
+            recursive_row_pivot_lu!(bottom_ipiv, A22, m2, n2)
 
             # Apply interchanges to A21.
             apply_row_swaps!(A21, bottom_ipiv, n1, min(m2,n2))
@@ -798,6 +815,13 @@ function blocked_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix, m::Intege
 
         if n_diag ≤ block_size
             return recursive_row_pivot_lu!(rplu, A, ipiv, m, n)
+        elseif m * n < serial_threshold
+            # For small (sub-)matrices, revert to a serial solve.
+            if rank == 0
+                return blocked_row_pivot_lu!(ipiv, A, m, n)
+            else
+                return nothing
+            end
         end
 
         rectangular_parallelism = true
@@ -907,6 +931,15 @@ function recursive_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix,
         comm = rplu.comm
         rank = rplu.rank
         nproc = rplu.nproc
+
+        if m * n < serial_threshold
+            # For small (sub-)matrices, revert to a serial solve.
+            if rank == 0
+                return recursive_row_pivot_lu!(ipiv, A, m, n)
+            else
+                return nothing
+            end
+        end
 
         if m == 1
             # One row case, just need to handle ipiv.
