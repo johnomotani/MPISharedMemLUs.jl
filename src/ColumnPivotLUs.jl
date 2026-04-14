@@ -53,7 +53,7 @@ struct RowPivotLU
 end
 
 struct RowPivotLUMPI{Vecint,Vecfloat}
-    ipiv::Vector{Int64}
+    ipiv::Vecint
     comm::MPI.Comm
     index_buffer::Vecint
     maxabs_buffer::Vecfloat
@@ -130,14 +130,14 @@ function get_row_pivot_lu(ipiv::Vector{Int64})
 end
 
 """
-    get_row_pivot_lu(ipiv::Union{Vector{Int64},Nothing}, comm::MPI.Comm,
+    get_row_pivot_lu(ipiv::AbstractVector{<:Integer}, comm::MPI.Comm,
                      index_buffer::AbstractVector{<:Integer},
                      maxabs_buffer::AbstractVector{<:Number})
 
-`ipiv` does not have to be initialised and is required only on the rank-0 process of
-`comm`, but must be longer than the largest number of pivot elements (the smaller of total
-number of rows or columns for a matrix) in any matrix that will be factorised using this
-`RowPivotLU`.
+`ipiv` does not have to be initialised and is a shared-memory array accessible on all
+processes in `comm`, which must be longer than the largest number of pivot elements (the
+smaller of total number of rows or columns for a matrix) in any matrix that will be
+factorised using this `RowPivotLU`.
 
 `comm` is the MPI communicator containing processes used to parallelise factorizations
 using this `RowPivotLUMPI`.
@@ -145,7 +145,7 @@ using this `RowPivotLUMPI`.
 `index_buffer` and `maxabs_buffer` should be shared-memory arrays accessible by all
 processes in `comm`, whose length is at least the size of `comm`.
 """
-function get_row_pivot_lu(ipiv::Union{Vector{Int64},Nothing}, comm::MPI.Comm,
+function get_row_pivot_lu(ipiv::AbstractVector{<:Integer}, comm::MPI.Comm,
                           index_buffer::AbstractVector{<:Integer},
                           maxabs_buffer::AbstractVector{<:Number})
     rank = MPI.Comm_rank(comm)
@@ -828,22 +828,19 @@ function blocked_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix, m::Intege
         for j ∈ 1:block_size:n_diag
             jb = min(block_size, n_diag - j + 1)
             je = j + jb - 1
-            if rank == 0
-                this_ipiv = @view ipiv[j:n_diag]
-            else
-                # Not used, so just pass through ipiv.
-                this_ipiv = @view ipiv[1:0]
-            end
+            this_ipiv = @view ipiv[j:n_diag]
 
             # Factor diagonal and subdiagonal blocks.
             @views recursive_row_pivot_lu!(rplu, A[j:m,j:je], this_ipiv, m - j + 1, jb)
 
             # Apply interchanges to columns 1:j-1.
-            # Row swaps are not parallelised, because memory copies probably do not
-            # benefit much from parallism (limited just by memory bandwidth) and the
-            # swapping is inherently sequential.
-            if rank == 0 && j > 1
-                apply_row_swaps!(@view(A[j:m,1:j-1]), this_ipiv, j - 1, jb)
+            if j > 1
+                cols_per_proc = (j - 1 + nproc - 1) ÷ nproc
+                col_range = rank*cols_per_proc+1:min((rank+1)*cols_per_proc,j-1)
+                if !isempty(col_range)
+                    apply_row_swaps!(@view(A[j:m,col_range]), this_ipiv,
+                                     length(col_range), jb)
+                end
             end
 
             if j + jb ≤ n
@@ -856,19 +853,18 @@ function blocked_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix, m::Intege
                     rectangular_parallelism = false
                 end
 
+                cols_per_proc = (n2 + nproc - 1) ÷ nproc
+                col_range = rank*cols_per_proc+je+1:min((rank+1)*cols_per_proc+je,n)
+
                 # Apply interchanges to columns j+jb:n.
-                # Row swaps are not parallelised, because memory copies probably do not
-                # benefit much from parallism (limited just by memory bandwidth) and the
-                # swapping is inherently sequential.
-                if rank == 0
-                    apply_row_swaps!(@view(A[j:m,je+1:n]), this_ipiv, n2, jb)
+                if !isempty(col_range)
+                    apply_row_swaps!(@view(A[j:m,col_range]), this_ipiv,
+                                     length(col_range), jb)
                 end
 
                 MPI.Barrier(comm)
 
                 # Compute block row of U.
-                cols_per_proc = (n2 + nproc - 1) ÷ nproc
-                col_range = rank*cols_per_proc+je+1:min((rank+1)*cols_per_proc+je,n)
                 if !isempty(col_range)
                     A12 = @view A[j:je,col_range]
                     @views trsm!('L', 'L', 'N', 'U', 1.0, A[j:je,j:je], A12)
@@ -895,12 +891,15 @@ function blocked_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix, m::Intege
                         mul!(A22, A21, A12, -1.0, 1.0)
                     end
                 end
-
+            else
                 MPI.Barrier(comm)
             end
 
             # Adjust pivot indices.
-            this_ipiv .+= j - 1
+            if rank == 0
+                this_ipiv .+= j - 1
+            end
+            MPI.Barrier(comm)
         end
     end
 
@@ -935,10 +934,10 @@ function recursive_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix,
         if m * n < serial_threshold
             # For small (sub-)matrices, revert to a serial solve.
             if rank == 0
-                return recursive_row_pivot_lu!(ipiv, A, m, n)
-            else
-                return nothing
+                recursive_row_pivot_lu!(ipiv, A, m, n)
             end
+            MPI.Barrier(comm)
+            return nothing
         end
 
         if m == 1
@@ -946,6 +945,7 @@ function recursive_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix,
             if rank == 0
                 ipiv[1] = 1
             end
+            MPI.Barrier(comm)
         elseif n == 1
             # One column case.
             pivot_ind = find_pivot(rplu, @view(A[:,1]), m)
@@ -983,11 +983,10 @@ function recursive_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix,
             # [ A12 ]
             # [ --- ]
             # [ A22 ]
-            # Row swaps are not parallelised, because memory copies probably do not
-            # benefit much from parallism (limited just by memory bandwidth) and the
-            # swapping is inherently sequential.
-            if rank == 0
-                apply_row_swaps!(@view(A[:,n1+1:n]), ipiv, n2, n1)
+            cols_per_proc = (n2 + nproc - 1) ÷ nproc
+            col_range = rank*cols_per_proc+n1+1:min((rank+1)*cols_per_proc+n1,n)
+            if !isempty(col_range)
+                apply_row_swaps!(@view(A[:,col_range]), ipiv, length(col_range), n1)
             end
 
             MPI.Barrier(comm)
@@ -1015,22 +1014,23 @@ function recursive_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix,
             MPI.Barrier(comm)
 
             # Factor A22
-            if rank == 0
-                bottom_ipiv = @view ipiv[n1+1:n_diag]
-            else
-                # Not used, so just pass through ipiv.
-                bottom_ipiv = ipiv
-            end
+            bottom_ipiv = @view ipiv[n1+1:n_diag]
             recursive_row_pivot_lu!(rplu, @view(A[n1+1:m,n1+1:n]), bottom_ipiv, m2, n2)
 
             # Apply interchanges to A21.
-            if rank == 0
-                apply_row_swaps!(@view(A[n1+1:m,1:n1]), bottom_ipiv, n1, min(m2,n2))
+            cols_per_proc = (n1 + nproc - 1) ÷ nproc
+            col_range = rank*cols_per_proc+1:min((rank+1)*cols_per_proc,n1)
+            if !isempty(col_range)
+                apply_row_swaps!(@view(A[n1+1:m,col_range]), bottom_ipiv,
+                                 length(col_range), min(m2,n2))
+            end
 
+            MPI.Barrier(comm)
+            if rank == 0
                 bottom_ipiv .+= n1
             end
+            MPI.Barrier(comm)
         end
-        MPI.Barrier(comm)
     end
     return nothing
 end

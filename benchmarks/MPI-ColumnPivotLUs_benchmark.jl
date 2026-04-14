@@ -52,19 +52,18 @@ function mpi_benchmark(short_size::Integer, long_size::Integer, nsamples::Intege
     mkpath(dat_dir)
 
     Accopy = allocate_shared_float(short_size, long_size)
+    jpiv = allocate_shared_int(short_size)
     index_buffer = allocate_shared_int(nproc)
     maxabs_buffer = allocate_shared_float(nproc)
     if rank == 0
         rng = StableRNG(42)
         Ac = rand(short_size, long_size)
-        jpiv = zeros(Int64, short_size)
 
         println("ColumnPivotLUMPI Benchmark np=$nproc short_size=$short_size, long_size=$long_size, ", now())
         println("=====================================================================================")
         println()
     else
         Ac = nothing
-        jpiv = zeros(Int64, 0)
     end
     Alu = get_column_pivot_lu(jpiv, comm, index_buffer, maxabs_buffer)
 
@@ -84,18 +83,17 @@ function mpi_benchmark(short_size::Integer, long_size::Integer, nsamples::Intege
     end
 
     Arcopy = allocate_shared_float(long_size, short_size)
+    ipiv = allocate_shared_int(short_size)
     index_buffer = allocate_shared_int(nproc)
     maxabs_buffer = allocate_shared_float(nproc)
     if rank == 0
         Ar = Matrix(transpose(Ac))
-        ipiv = zeros(Int64, short_size)
 
         println("RowPivotLUMPI Benchmark np=$nproc long_size=$long_size, short_size=$short_size, ", now())
         println("=====================================================================================")
         println()
     else
         Ar = nothing
-        ipiv = zeros(Int64, 0)
     end
     Alu = get_row_pivot_lu(ipiv, comm, index_buffer, maxabs_buffer)
 

@@ -51,12 +51,12 @@ function mpi_profile(short_size::Integer, long_size::Integer, nsamples::Integer)
     end
 
     Accopy = allocate_shared_float(short_size, long_size)
+    jpiv = allocate_shared_int(short_size)
     index_buffer = allocate_shared_int(nproc)
     maxabs_buffer = allocate_shared_float(nproc)
     if rank == 0
         rng = StableRNG(42)
         Ac = rand(short_size, long_size)
-        jpiv = zeros(Int64, short_size)
 
         Accopy .= Ac
 
@@ -65,7 +65,6 @@ function mpi_profile(short_size::Integer, long_size::Integer, nsamples::Integer)
         println()
     else
         Ac = nothing
-        jpiv = zeros(Int64, 0)
     end
     Acplu = get_column_pivot_lu(jpiv, comm, index_buffer, maxabs_buffer)
 
@@ -90,11 +89,11 @@ function mpi_profile(short_size::Integer, long_size::Integer, nsamples::Integer)
     Profile.clear()
 
     Arcopy = allocate_shared_float(long_size, short_size)
+    ipiv = allocate_shared_int(short_size)
     index_buffer = allocate_shared_int(nproc)
     maxabs_buffer = allocate_shared_float(nproc)
     if rank == 0
         Ar = Matrix(transpose(Ac))
-        ipiv = zeros(Int64, short_size)
 
         Arcopy .= Ar
 
@@ -103,7 +102,6 @@ function mpi_profile(short_size::Integer, long_size::Integer, nsamples::Integer)
         println()
     else
         Ar = nothing
-        ipiv = zeros(Int64, 0)
     end
     Arplu = get_row_pivot_lu(ipiv, comm, index_buffer, maxabs_buffer)
 

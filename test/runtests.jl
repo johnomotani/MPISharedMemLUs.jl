@@ -85,7 +85,7 @@ function test_column_pivoting_mpi(m, n, tol)
             maxabs_buffer .= NaN
         end
         s = min(m, n)
-        jpiv = zeros(Int64, s)
+        jpiv = allocate_shared_int(s)
         Alu = get_column_pivot_lu(jpiv, comm, index_buffer, maxabs_buffer)
         MPI.Barrier(comm)
         lu!(Alu, LU_arr)
@@ -152,7 +152,7 @@ function test_row_pivoting_mpi(m, n, tol)
             maxabs_buffer .= NaN
         end
         s = min(m, n)
-        ipiv = zeros(Int64, s);
+        ipiv = allocate_shared_int(s);
         Alu = get_row_pivot_lu(ipiv, comm, index_buffer, maxabs_buffer)
         MPI.Barrier(comm)
         lu!(Alu, LU_arr)
