@@ -638,8 +638,10 @@ function apply_row_swaps!(A, ipiv, n, mpivot)
             j = n32 + 1
             for i ∈ 1:mpivot
                 pivot = ipiv[i]
-                for k ∈ j:n
-                    A[i,k], A[pivot,k] = A[pivot,k], A[i,k]
+                if pivot != i
+                    for k ∈ j:n
+                        A[i,k], A[pivot,k] = A[pivot,k], A[i,k]
+                    end
                 end
             end
         end
