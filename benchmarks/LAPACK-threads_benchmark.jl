@@ -22,7 +22,7 @@ function threaded_benchmark(short_size::Integer, long_size::Integer)
     println("============================================================================")
     println()
 
-    b = @benchmark LAPACK.getrf!(Acopy, $ipiv) setup=(Acopy=copy($Ar))
+    b = @benchmark LAPACK.getrf!(Acopy, $ipiv; check=false) setup=(Acopy=copy($Ar))
     display(b)
     println()
     open(joinpath(dat_dir, "LAPACK-$long_size-$short_size.dat"), "a") do io

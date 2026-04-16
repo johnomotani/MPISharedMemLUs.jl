@@ -16,7 +16,7 @@ function serial_benchmark(short_size::Integer, long_size::Integer)
     println()
 
     println("LAPACK")
-    b = @benchmark LAPACK.getrf!(Acopy, $ipiv) setup=(Acopy=copy($Ar))
+    b = @benchmark LAPACK.getrf!(Acopy, $ipiv; check=false) setup=(Acopy=copy($Ar))
     display(b)
 
     println("\nRow pivoting")
