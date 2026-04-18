@@ -875,8 +875,12 @@ function blocked_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix, m::Intege
                 this_ipiv = @view ipiv[j:n_diag]
 
                 # Factor diagonal and subdiagonal blocks.
-                @maybe_timeit rplu.timer "recursive_row_pivot_lu!" begin
-                    @views recursive_row_pivot_lu!(rplu, A[j:m,j:je], this_ipiv, m - j + 1, jb)
+                @maybe_timeit rplu.timer "left panel factorisation" begin
+                    #@views recursive_row_pivot_lu!(rplu, A[j:m,j:je], this_ipiv, m - j + 1, jb)
+                    if rank == 0
+                        #@views recursive_row_pivot_lu!(this_ipiv, A[j:m,j:je], m - j + 1, jb)
+                        @views getrf!(A[j:m,j:je], this_ipiv; check=false)
+                    end
                 end
                 @maybe_timeit rplu.timer "MPI.Barrier 1" begin
                     MPI.Barrier(comm)
