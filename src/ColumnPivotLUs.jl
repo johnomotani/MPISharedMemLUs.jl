@@ -36,7 +36,7 @@ struct ColumnPivotLU
     jpiv::Vector{Int64}
 end
 
-struct ColumnPivotLUMPI{Vecint,Vecfloat,Ttimer}
+struct ColumnPivotLUMPI{Vecint,Vecfloat,Ttimer,Tsync}
     jpiv::Vector{Int64}
     comm::MPI.Comm
     index_buffer::Vecint
@@ -48,6 +48,7 @@ struct ColumnPivotLUMPI{Vecint,Vecfloat,Ttimer}
     proc_j::Int64
     proc_J::Int64
     use_rectangular_parallelism_threshold::Int64
+    synchronize::Tsync
     timer::Ttimer
 end
 
@@ -55,7 +56,7 @@ struct RowPivotLU
     ipiv::Vector{Int64}
 end
 
-struct RowPivotLUMPI{Vecint,Vecfloat,Ttimer}
+struct RowPivotLUMPI{Vecint,Vecfloat,Ttimer,Tsync}
     ipiv::Vecint
     comm::MPI.Comm
     index_buffer::Vecint
@@ -67,6 +68,7 @@ struct RowPivotLUMPI{Vecint,Vecfloat,Ttimer}
     proc_j::Int64
     proc_J::Int64
     use_rectangular_parallelism_threshold::Int64
+    synchronize::Tsync
     timer::Ttimer
 end
 
@@ -110,6 +112,7 @@ processes in `comm`, whose length is at least the size of `comm`.
 function get_column_pivot_lu(jpiv::Union{Vector{Int64},Nothing}, comm::MPI.Comm,
                              index_buffer::AbstractVector{<:Integer},
                              maxabs_buffer::AbstractVector{<:Number};
+                             synchronize=nothing,
                              timer::Union{TimerOutput,Nothing}=nothing)
     rank = MPI.Comm_rank(comm)
     nproc = MPI.Comm_size(comm)
@@ -129,9 +132,13 @@ function get_column_pivot_lu(jpiv::Union{Vector{Int64},Nothing}, comm::MPI.Comm,
     # grid.
     use_rectangular_parallelism_threshold = (8 * proc_I) ÷ proc_J
 
+    if synchronize === nothing
+        synchronize = () -> MPI.Barrier(comm)
+    end
+
     return ColumnPivotLUMPI(jpiv, comm, index_buffer, maxabs_buffer, rank, nproc, proc_i,
                             proc_I, proc_j, proc_J, use_rectangular_parallelism_threshold,
-                            timer)
+                            synchronize, timer)
 end
 
 """
@@ -164,6 +171,7 @@ processes in `comm`, whose length is at least the size of `comm`.
 function get_row_pivot_lu(ipiv::AbstractVector{<:Integer}, comm::MPI.Comm,
                           index_buffer::AbstractVector{<:Integer},
                           maxabs_buffer::AbstractVector{<:Number};
+                          synchronize=nothing,
                           timer::Union{TimerOutput,Nothing}=nothing)
     rank = MPI.Comm_rank(comm)
     nproc = MPI.Comm_size(comm)
@@ -183,9 +191,13 @@ function get_row_pivot_lu(ipiv::AbstractVector{<:Integer}, comm::MPI.Comm,
     # grid.
     use_rectangular_parallelism_threshold = (8 * proc_J) ÷ proc_I
 
+    if synchronize === nothing
+        synchronize = () -> MPI.Barrier(comm)
+    end
+
     return RowPivotLUMPI(ipiv, comm, index_buffer, maxabs_buffer, rank, nproc, proc_i,
                          proc_I, proc_j, proc_J, use_rectangular_parallelism_threshold,
-                         timer)
+                         synchronize, timer)
 end
 
 function find_pivot(a::AbstractVector, n::Integer)
@@ -211,6 +223,7 @@ function find_pivot(xplu::Union{ColumnPivotLUMPI,RowPivotLUMPI}, a::AbstractVect
         maxabs_buffer = xplu.maxabs_buffer
         rank = xplu.rank
         nproc = xplu.nproc
+        synchronize = xplu.synchronize
 
         entries_per_proc = (n + nproc - 1) ÷ nproc
         first_local_entry = rank * entries_per_proc + 1
@@ -231,7 +244,7 @@ function find_pivot(xplu::Union{ColumnPivotLUMPI,RowPivotLUMPI}, a::AbstractVect
             index_buffer[rank+1] = -1
             maxabs_buffer[rank+1] = -1.0
         end
-        MPI.Barrier(comm)
+        synchronize()
         if rank == 0
             i = argmax(@view(maxabs_buffer[1:nproc]))
             pivot_ind = index_buffer[i]
@@ -423,6 +436,7 @@ function blocked_column_pivot_lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix, m::
         proc_I = cplu.proc_I
         proc_J = cplu.proc_J
         rectangular_threshold = cplu.use_rectangular_parallelism_threshold
+        synchronize = cplu.synchronize
         n_diag = min(m, n)
 
         if n_diag ≤ block_size
@@ -483,8 +497,8 @@ function blocked_column_pivot_lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix, m::
                         end
                     end
 
-                    @maybe_timeit cplu.timer "MPI.Barrier 1" begin
-                        MPI.Barrier(comm)
+                    @maybe_timeit cplu.timer "synchronize 1" begin
+                        synchronize()
                     end
 
                     # Compute block column of L.
@@ -497,8 +511,8 @@ function blocked_column_pivot_lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix, m::
                         end
                     end
 
-                    @maybe_timeit cplu.timer "MPI.Barrier 2" begin
-                        MPI.Barrier(comm)
+                    @maybe_timeit cplu.timer "synchronize 2" begin
+                        synchronize()
                     end
 
                     if i + ib ≤ n
@@ -523,8 +537,8 @@ function blocked_column_pivot_lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix, m::
                         end
                     end
 
-                    @maybe_timeit cplu.timer "MPI.Barrier 3" begin
-                        MPI.Barrier(comm)
+                    @maybe_timeit cplu.timer "synchronize 3" begin
+                        synchronize()
                     end
                 end
 
@@ -562,6 +576,7 @@ function recursive_column_pivot_lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix,
         comm = cplu.comm
         rank = cplu.rank
         nproc = cplu.nproc
+        synchronize = cplu.synchronize
 
         if m * n < serial_threshold
             # For small (sub-)matrices, revert to a serial solve.
@@ -611,7 +626,7 @@ function recursive_column_pivot_lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix,
                 apply_column_swaps!(@view(A[m1+1:m,:]), jpiv, m2, m1)
             end
 
-            MPI.Barrier(comm)
+            synchronize()
 
             # Solve A21
             rows_per_proc = (m2 + nproc - 1) ÷ nproc
@@ -621,7 +636,7 @@ function recursive_column_pivot_lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix,
                 @views trsm!('R', 'U', 'N', 'N', 1.0, A[1:m1,1:m1], A21)
             end
 
-            MPI.Barrier(comm)
+            synchronize()
 
             # Update A22
             cols_per_proc = (n2 + nproc - 1) ÷ nproc
@@ -633,7 +648,7 @@ function recursive_column_pivot_lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix,
                 mul!(A22, A21, A12, -1.0, 1.0)
             end
 
-            MPI.Barrier(comm)
+            synchronize()
 
             # Factor A22
             if rank == 0
@@ -651,7 +666,7 @@ function recursive_column_pivot_lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix,
                 right_jpiv .+= m1
             end
         end
-        MPI.Barrier(comm)
+        synchronize()
     end
     return nothing
 end
@@ -853,6 +868,7 @@ function blocked_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix, m::Intege
         proc_I = rplu.proc_I
         proc_J = rplu.proc_J
         rectangular_threshold = rplu.use_rectangular_parallelism_threshold
+        synchronize = rplu.synchronize
         n_diag = min(m, n)
 
         if n_diag ≤ block_size
@@ -882,8 +898,8 @@ function blocked_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix, m::Intege
                         @views getrf!(A[j:m,j:je], this_ipiv; check=false)
                     end
                 end
-                @maybe_timeit rplu.timer "MPI.Barrier 1" begin
-                    MPI.Barrier(comm)
+                @maybe_timeit rplu.timer "synchronize 1" begin
+                    synchronize()
                 end
 
                 # Apply interchanges to columns 1:j-1.
@@ -925,8 +941,8 @@ function blocked_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix, m::Intege
                         end
                     end
 
-                    @maybe_timeit rplu.timer "MPI.Barrier 2" begin
-                        MPI.Barrier(comm)
+                    @maybe_timeit rplu.timer "synchronize 2" begin
+                        synchronize()
                     end
 
                     if j + jb ≤ m
@@ -951,8 +967,8 @@ function blocked_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix, m::Intege
                         end
                     end
                 else
-                    @maybe_timeit rplu.timer "MPI.Barrier 2" begin
-                        MPI.Barrier(comm)
+                    @maybe_timeit rplu.timer "synchronize 2" begin
+                        synchronize()
                     end
                 end
 
@@ -960,8 +976,8 @@ function blocked_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix, m::Intege
                 if rank == 0
                     this_ipiv .+= j - 1
                 end
-                @maybe_timeit rplu.timer "MPI.Barrier 3" begin
-                    MPI.Barrier(comm)
+                @maybe_timeit rplu.timer "synchronize 3" begin
+                    synchronize()
                 end
             end
         end
@@ -994,6 +1010,7 @@ function recursive_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix,
         comm = rplu.comm
         rank = rplu.rank
         nproc = rplu.nproc
+        synchronize = rplu.synchronize
 
         if m * n < serial_threshold
             # For small (sub-)matrices, revert to a serial solve.
@@ -1019,7 +1036,7 @@ function recursive_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix,
                 A[1,1], A[pivot_ind,1] = A[pivot_ind,1], A[1,1]
             end
 
-            MPI.Barrier(comm)
+            synchronize()
 
             # Update the column
             rows_per_proc = (m - 1 + nproc - 1) ÷ nproc
@@ -1042,7 +1059,7 @@ function recursive_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix,
             # [ A21 ]
             recursive_row_pivot_lu!(rplu, @view(A[:,1:n1]), ipiv, m, n1)
 
-            MPI.Barrier(comm)
+            synchronize()
 
             # Apply interchanges to
             # [ A12 ]
@@ -1064,13 +1081,13 @@ function recursive_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix,
                 mul!(A22, A21, A12, -1.0, 1.0)
             end
 
-            MPI.Barrier(comm)
+            synchronize()
 
             # Factor A22
             bottom_ipiv = @view ipiv[n1+1:n_diag]
             recursive_row_pivot_lu!(rplu, @view(A[n1+1:m,n1+1:n]), bottom_ipiv, m2, n2)
 
-            MPI.Barrier(comm)
+            synchronize()
 
             # Apply interchanges to A21.
             cols_per_proc = (n1 + nproc - 1) ÷ nproc
@@ -1080,7 +1097,7 @@ function recursive_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix,
                                  length(col_range), min(m2,n2))
             end
 
-            MPI.Barrier(comm)
+            synchronize()
             if rank == 0
                 bottom_ipiv .+= n1
             end
